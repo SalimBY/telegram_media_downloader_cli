@@ -14,6 +14,8 @@ from utils.log import LogFilter
 from utils.meta import print_meta
 from utils.updates import check_for_updates
 
+from argparse import ArgumentParser
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
@@ -27,6 +29,17 @@ logger = logging.getLogger("media_downloader")
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 FAILED_IDS: list = []
 DOWNLOADED_IDS: list = []
+
+parser = ArgumentParser()
+
+parser.add_argument('-m', dest='message_id', type=int, help="ID of a message")
+
+parser.add_argument('-ml', dest='message_id_list', nargs='+',
+                    type=int, help="List of message IDs")
+
+parser.add_argument('-s', dest='search', type=str, help="text in messages")
+
+args = parser.parse_args()
 
 
 def update_config(config: dict):
@@ -324,29 +337,56 @@ async def begin_import(config: dict, pagination_limit: int) -> dict:
             pagination_count += 1
             messages_list.append(message)
 
-    async for message in messages_iter:  # type: ignore
-        if pagination_count != pagination_limit:
-            pagination_count += 1
-            messages_list.append(message)
-        else:
+    if any(args.search, args.message_id, args.message_id_list):
+        custom_messages_list = []
+
+        if args.search:
+            custom_messages_list = [msg async for msg in client.search_messages(chat_id=config["chat_id"], query=args.search)]
+
+        elif args.message_id:
+            custom_messages_list.append(args.message_id)
+
+        elif args.message_id_list:
+            custom_messages_list.extend(args.message_id_list)
+
+        elif args.message_id or args.message_id_list:
+
+            custom_messages_list = await client.get_messages(
+                chat_id=config["chat_id"], message_ids=args.message_id_list
+            )
+
+        last_read_message_id = await process_messages(
+            client,
+            custom_messages_list,
+            config["media_types"],
+            config["file_formats"],
+        )
+
+    else:
+        async for message in messages_iter:  # type: ignore
+            # print(message)
+            if pagination_count != pagination_limit:
+                pagination_count += 1
+                messages_list.append(message)
+            else:
+                last_read_message_id = await process_messages(
+                    client,
+                    messages_list,
+                    config["media_types"],
+                    config["file_formats"],
+                )
+                pagination_count = 0
+                messages_list = []
+                messages_list.append(message)
+                config["last_read_message_id"] = last_read_message_id
+                update_config(config)
+        if messages_list:
             last_read_message_id = await process_messages(
                 client,
                 messages_list,
                 config["media_types"],
                 config["file_formats"],
             )
-            pagination_count = 0
-            messages_list = []
-            messages_list.append(message)
-            config["last_read_message_id"] = last_read_message_id
-            update_config(config)
-    if messages_list:
-        last_read_message_id = await process_messages(
-            client,
-            messages_list,
-            config["media_types"],
-            config["file_formats"],
-        )
 
     await client.stop()
     config["last_read_message_id"] = last_read_message_id
